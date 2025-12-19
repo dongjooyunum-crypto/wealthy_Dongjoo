@@ -6,23 +6,43 @@ import google.generativeai as genai
 import numpy as np
 from datetime import datetime
 
-# 1. UI 및 다크 테마 설정 (절대 고정)
-st.set_page_config(page_title="Wealthy Dongjoo Master", layout="wide")
+# 1. UI 및 다크 테마 설정
+st.set_page_config(page_title="Wealthy Dongjoo", layout="centered")
 st.markdown("""
     <style>
     .main { background-color: #0d1117; }
     .stMetric { background-color: #161b22; padding: 20px; border-radius: 15px; border: 1px solid #30363d; }
     h1 { color: #58a6ff; font-style: italic; font-weight: 900 !important; }
     h2, h3 { color: #c9d1d9; border-bottom: 1px solid #30363d; padding-bottom: 10px; margin-top: 35px; }
-    .tooltip { border-bottom: 1px dotted #8b949e; color: #8b949e; cursor: help; font-size: 0.85rem; }
     </style>
 """, unsafe_allow_html=True)
 
-# 2. 사이드바 - 통화 및 디폴트 투자 설정
-st.sidebar.header("🌍 통화 및 투자 설정")
-user_currency = st.sidebar.selectbox("표시 통화 선택", ["USD", "CAD", "KRW"], index=0)
+# 2. 세션 상태 관리
+if 'menu' not in st.session_state: st.session_state.menu = "Dashboard"
+if 'user_lang' not in st.session_state: st.session_state.user_lang = "KO"
+if 'user_currency' not in st.session_state: st.session_state.user_currency = "USD"
 
-# 실시간 환율 정보 (USD 기준)
+# --- [언어 팩] ---
+L = {
+    "KO": {
+        "dash": "📊 대시보드", "set": "⚙️ 설정", "lang_sel": "언어 선택", "curr_sel": "통화 선택",
+        "input_ticker": "분석할 티커 입력", "tm_title": "🕰️ What IF", "tm_start": "투자 시작 연도",
+        "sim_title": "📊 자산성장 예측표", "init_cash": "초기 원금", "monthly_cash": "월 적립액",
+        "inv_years": "투자 기간 (년)", "real": "현실적", "bull": "낙관적", "bear": "비관적", "principal": "누적 원금",
+        "cur_p": "현재 주가", "list_p": "상장가", "per": "PER", "roe": "ROE", "vol": "변동성",
+        "final_asset": "최종 자산", "profit": "순수익"
+    },
+    "EN": {
+        "dash": "📊 Dashboard", "set": "⚙️ Settings", "lang_sel": "Language", "curr_sel": "Currency",
+        "input_ticker": "Enter Ticker", "tm_title": "🕰️ What IF", "tm_start": "Start Year",
+        "sim_title": "📊 Asset Growth Projection", "init_cash": "Initial Principal", "monthly_cash": "Monthly Deposit",
+        "inv_years": "Period (Yrs)", "real": "Realistic", "bull": "Bullish", "bear": "Bearish", "principal": "Total Principal",
+        "cur_p": "Current Price", "list_p": "Listing Price", "per": "PER", "roe": "ROE", "vol": "Vol",
+        "final_asset": "Final Asset", "profit": "Net Profit"
+    }
+}[st.session_state.user_lang]
+
+# 3. 환율 정보
 @st.cache_data(ttl=3600)
 def get_exchange_rates():
     try:
@@ -33,140 +53,102 @@ def get_exchange_rates():
         return {"USD": 1.0, "CAD": 1.40, "KRW": 1400.0}
 
 rates = get_exchange_rates()
-curr_symbol = {"USD": "$", "CAD": "C$", "KRW": "₩"}[user_currency]
+curr_symbol = {"USD": "$", "CAD": "C$", "KRW": "₩"}[st.session_state.user_currency]
 
-# 명령 사항: 디폴트값 초기 원금 1000, 매달 적립 200 설정
-init_cash_in = st.sidebar.number_input(f"초기 투자 원금 ({user_currency})", value=1000)
-monthly_cash_in = st.sidebar.number_input(f"매달 추가 적립액 ({user_currency})", value=200)
-invest_years = st.sidebar.slider("미래 투자 기간 (년)", 1, 30, 10)
-api_key = st.sidebar.text_input("Gemini API Key (선택)", type="password")
+# --- [사이드바 메뉴] ---
+st.sidebar.title("Wealthy Dongjoo")
+if st.sidebar.button(L["dash"]): st.session_state.menu = "Dashboard"
+if st.sidebar.button(L["set"]): st.session_state.menu = "Settings"
 
-# 내부 계산용 USD 변환
-init_cash_usd = init_cash_in / rates[user_currency]
-monthly_cash_usd = monthly_cash_in / rates[user_currency]
+# --- [화면 1: 설정창] ---
+if st.session_state.menu == "Settings":
+    st.title(L["set"])
+    st.session_state.user_lang = st.radio(L["lang_sel"], ["KO", "EN"], index=0 if st.session_state.user_lang == "KO" else 1)
+    st.session_state.user_currency = st.selectbox(L["curr_sel"], ["USD", "CAD", "KRW"], index=["USD", "CAD", "KRW"].index(st.session_state.user_currency))
+    st.session_state.api_key = st.text_input("Gemini API Key", type="password")
 
-st.title("🏦 Wealthy Dongjoo : AI 종합 투자 도우미")
-ticker = st.text_input("분석할 티커 입력", "VFV.TO").upper()
-
-if ticker:
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        hist_full = stock.history(period="max")
-        hist_5y = stock.history(period="5y")
-
-        if hist_full.empty:
-            st.error("데이터를 찾을 수 없습니다.")
-        else:
-            # --- [교정] 종목 통화 인식 및 환율 변환 ---
+# --- [화면 2: 대시보드] ---
+else:
+    ticker = st.text_input(L["input_ticker"], ).upper()
+    if ticker:
+        try:
+            stock = yf.Ticker(ticker); info = stock.info
+            hist_full = stock.history(period="max"); hist_5y = stock.history(period="5y")
             stock_currency = info.get('currency', 'USD')
-            raw_curr_p = info.get('currentPrice') or info.get('regularMarketPrice') or 0
             
-            # 주가 데이터를 USD로 먼저 변환한 후 사용자 통화로 재변환
-            price_in_usd = raw_curr_p / rates.get(stock_currency, 1.0)
-            display_price = price_in_usd * rates[user_currency]
+            # [1] 기업 분석 지표 (PER, ROE, 현재가 등 복구)
+            raw_p = info.get('currentPrice') or info.get('regularMarketPrice') or 0
+            display_price = (raw_p / rates.get(stock_currency, 1.0)) * rates[st.session_state.user_currency]
             
-            # 3. 실시간 주가 차트 (현재 주가 그래프 유지)
-            st.subheader(f"📈 {ticker} 실시간 주가 흐름 (5년, 단위: {user_currency})")
-            adj_hist = (hist_5y['Close'] / rates.get(stock_currency, 1.0)) * rates[user_currency]
-            fig_curr = go.Figure()
-            fig_curr.add_trace(go.Scatter(x=hist_5y.index, y=adj_hist, name='주가', line=dict(color='#58a6ff', width=2)))
-            fig_curr.update_layout(template="plotly_dark", height=300, hovermode="x unified")
-            st.plotly_chart(fig_curr, use_container_width=True)
-
-            # 4. 핵심 지표 분석 (툴팁 설명 포함)
-            st.subheader("📍 핵심 지표 분석")
+            st.subheader(f"📍 {ticker} Analysis")
             c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                st.metric("현재 주가", f"{curr_symbol}{display_price:,.2f}")
-                st.caption(f"상장가: {curr_symbol}{(hist_full['Close'].iloc[0] / rates.get(stock_currency, 1.0)) * rates[user_currency]:,.2f}")
-            with c2:
-                per = info.get('forwardPE', 0)
-                st.metric("PER (수익 가치)", f"{per:.2f}")
-                st.markdown('<div class="tooltip" title="낮을수록 저평가. 주가가 이익의 몇 배인지 나타냄.">❓ PER 분석</div>', unsafe_allow_html=True)
-            with c3:
-                roe = info.get('returnOnEquity', 0) * 100
-                st.metric("ROE (자본 효율)", f"{roe:.1f}%")
-                st.markdown('<div class="tooltip" title="높을수록 우량. 기업이 자본을 얼마나 잘 쓰는지 나타냄.">❓ ROE 분석</div>', unsafe_allow_html=True)
-            with c4:
-                vol = hist_5y['Close'].pct_change().std() * np.sqrt(252) * 100
-                st.metric("변동성 (Vol)", f"{vol:.1f}%")
-                st.markdown('<div class="tooltip" title="낮을수록 안정적. 주가의 연간 흔들림 정도.">❓ 변동성 분석</div>', unsafe_allow_html=True)
+            c1.metric(L["cur_p"], f"{curr_symbol}{display_price:,.2f}")
+            c2.metric(L["per"], f"{info.get('forwardPE', 0):.2f}")
+            c3.metric(L["roe"], f"{info.get('returnOnEquity', 0)*100:.1f}%")
+            vol_val = hist_5y['Close'].pct_change().std() * np.sqrt(252)
+            c4.metric(L["vol"], f"{vol_val*100:.1f}%")
+            st.caption(f"Listing: {hist_full.index[0].year} | {L['list_p']}: {curr_symbol}{(hist_full['Close'].iloc[0] / rates.get(stock_currency, 1.0)) * rates[st.session_state.user_currency]:,.2f}")
 
-            # 5. 종합 리포트 및 AI 분석
-            st.divider()
-            ai_score = 1.0
-            if api_key:
-                try:
-                    genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel('gemini-1.5-flash')
-                    prompt = f"종목:{ticker}, PER:{per}, ROE:{roe}%. {user_currency} 기준 리포트와 SCORE:0.5~1.5를 작성해줘."
-                    with st.spinner('AI 분석 리포트 생성 중...'):
-                        res = model.generate_content(prompt)
-                        st.markdown(f"### 💬 AI 실시간 종합 리포트\n{res.text}")
-                        if "SCORE:" in res.text: ai_score = float(res.text.split("SCORE:")[-1].strip().split()[0])
-                except: st.warning("AI 호출 지연")
-            else:
-                st.markdown("### 📊 퀀트 자동 분석 리포트 (기본)")
-
-            # 6. 역사적 타임머신 (5년 갭)
-            st.divider()
-            st.subheader("🕰️ 역사적 타임머신")
-            start_years = [y for y in range(1900, datetime.now().year, 5) if y >= hist_full.index[0].year]
-            selected_year = st.selectbox("투자 시작 연도 선택", start_years[::-1])
-            if selected_year:
-                p_data = hist_full.loc[f"{selected_year}-01-01":]
-                p_start_usd = p_data['Close'].iloc[0] / rates.get(stock_currency, 1.0)
-                p_curr_usd = hist_full['Close'].iloc[-1] / rates.get(stock_currency, 1.0)
-                p_years = datetime.now().year - selected_year
-                total_inv_past = (init_cash_usd + (monthly_cash_usd * 12 * p_years)) * rates[user_currency]
-                
-                m_hist = p_data['Close'].resample('ME').last()
-                shares = init_cash_usd / p_start_usd
-                for p in m_hist: shares += monthly_cash_usd / (p / rates.get(stock_currency, 1.0))
-                final_val_past = shares * p_curr_usd * rates[user_currency]
-                
-                tc1, tc2, tc3 = st.columns(3)
-                tc1.metric(f"{selected_year}년 시작가", f"{curr_symbol}{p_start_usd * rates[user_currency]:,.2f}")
-                tc2.metric("현재 자산 가치", f"{curr_symbol}{final_val_past:,.0f}")
-                tc3.metric("누적 수익률", f"{((final_val_past - total_inv_past) / total_inv_past) * 100:.1f}%")
-
-            # 7. 미래 자산 성장 시뮬레이션 (원금 선 & 모든 시나리오 가격 표시)
-            st.divider()
-            st.subheader("📈 미래 자산 성장 시뮬레이션 (AI 리얼리티)")
-            n_y_total = max(1, datetime.now().year - hist_full.index[0].year)
-            cagr = ((price_in_usd / (hist_full['Close'].iloc[0] / rates.get(stock_currency, 1.0))) ** (1/n_y_total) - 1)
-            real_rate = cagr * ai_score
-            years = np.arange(invest_years + 1)
+            # [2] What IF (과거 시뮬레이션 금액)
+            st.subheader(L["tm_title"])
+            list_yr = hist_full.index[0].year
+            available_yrs = list(range(list_yr, datetime.now().year))
+            selected_yr = st.selectbox(L["tm_start"], available_yrs[::-1], index=available_yrs[::-1].index(max(list_yr, 2000)) if max(list_yr, 2000) in available_yrs else 0)
             
-            def get_path(r, n):
-                vals = []; c = init_cash_usd
-                for y in years:
-                    if y > 0: c = (c + (monthly_cash_usd * 12)) * (1 + r + np.random.normal(0, n/100))
-                    vals.append(max(0, c * rates[user_currency]))
-                return vals
+            w_init = st.number_input(L["init_cash"], value=1000, key="wi")
+            w_month = st.number_input(L["monthly_cash"], value=200, key="wm")
 
-            p_real = get_path(real_rate, vol*0.7)
-            p_bull = get_path(real_rate*1.3, vol*0.5)
-            p_bear = get_path(real_rate*0.6, vol*1.2)
-            principal_path = [(init_cash_usd + (monthly_cash_usd * 12 * y)) * rates[user_currency] for y in years]
-
-            fig_future = go.Figure()
-            # 명령 사항: 현실적, 낙관적, 비관적 모든 선에 최종 가격 표시 고정
-            fig_future.add_trace(go.Scatter(x=years, y=p_real, name=f"현실적 ({curr_symbol}{p_real[-1]:,.0f})", line=dict(color='#10b981', width=4)))
-            fig_future.add_trace(go.Scatter(x=years, y=p_bull, name=f"낙관적 ({curr_symbol}{p_bull[-1]:,.0f})", line=dict(color='#3b82f6', dash='dash')))
-            fig_future.add_trace(go.Scatter(x=years, y=p_bear, name=f"비관적 ({curr_symbol}{p_bear[-1]:,.0f})", line=dict(color='#ef4444', dash='dot')))
-            # 명령 사항: 흰색 원금 선 추가
-            fig_future.add_trace(go.Scatter(x=years, y=principal_path, name=f"누적 원금 ({curr_symbol}{principal_path[-1]:,.0f})", line=dict(color='#ffffff', width=2, dash='dot')))
+            p_data = hist_full.loc[f"{selected_yr}-01-01":]['Close']
+            p_data_m = p_data.resample('ME').last()
+            init_u = w_init / rates[st.session_state.user_currency]
+            month_u = w_month / rates[st.session_state.user_currency]
+            shares = init_u / (p_data.iloc[0] / rates.get(stock_currency, 1.0))
+            for p in p_data_m: shares += month_u / (p / rates.get(stock_currency, 1.0))
             
-            fig_future.update_layout(template="plotly_dark", height=450, yaxis_title=f"자산 가치 ({user_currency})", hovermode="x unified")
-            st.plotly_chart(fig_future, use_container_width=True)
+            final_v_past = shares * (p_data.iloc[-1] / rates.get(stock_currency, 1.0)) * rates[st.session_state.user_currency]
+            total_i_past = (w_init + (w_month * len(p_data_m)))
+            
+            wc1, wc2 = st.columns(2)
+            wc1.metric(f"Past {L['final_asset']}", f"{curr_symbol}{final_v_past:,.0f}")
+            wc2.metric(f"Past {L['profit']}", f"{curr_symbol}{final_v_past - total_i_past:,.0f}", f"{((final_v_past-total_i_past)/total_i_past)*100:.1f}%")
 
-            # 최종 결과 섹션
-            sc1, sc2, sc3 = st.columns(3)
-            sc1.metric("현실적 최종 자산", f"{curr_symbol}{p_real[-1]:,.0f}", f"{((p_real[-1]-principal_path[-1])/principal_path[-1])*100:.1f}%")
-            sc2.metric("낙관적 최종 자산", f"{curr_symbol}{p_bull[-1]:,.0f}", f"{((p_bull[-1]-principal_path[-1])/principal_path[-1])*100:.1f}%")
-            sc3.metric("누적 투자 원금", f"{curr_symbol}{principal_path[-1]:,.0f}")
+            # [3] 자산성장 예측표 (미래 시뮬레이션 및 하단 상세 수치 복구)
+            st.divider(); st.subheader(L["sim_title"])
+            inv_y = st.slider(L["inv_years"], 1, 30, 10)
+            
+            auto_cagr = ((hist_full['Close'].iloc[-1] / hist_full['Close'].iloc[0]) ** (1/max(1, (hist_full.index[-1]-hist_full.index[0]).days/365.25))) - 1
+            years_arr = np.arange(inv_y + 1)
+            
+            def run_sim(r, v):
+                c = w_init / rates[st.session_state.user_currency]; m = w_month / rates[st.session_state.user_currency]
+                path = []
+                for y in years_arr:
+                    if y > 0: c = (c + (m * 12)) * (1 + r + np.random.normal(0, v))
+                    path.append(max(0, c * rates[st.session_state.user_currency]))
+                return path
 
-    except Exception as e:
-        st.error(f"오류 발생: {e}")
+            p_real = run_sim(auto_cagr, vol_val*0.7); p_bull = run_sim(auto_cagr*1.3, vol_val*0.5); p_bear = run_sim(auto_cagr*0.6, vol_val*1.2)
+            principal_path = [(w_init + (w_month * 12 * y)) for y in years_arr]
+
+            fig_f = go.Figure()
+            fig_f.add_trace(go.Scatter(x=years_arr, y=p_real, name=f"{L['real']} ({curr_symbol}{p_real[-1]:,.0f})", line=dict(color='#10b981', width=4)))
+            fig_f.add_trace(go.Scatter(x=years_arr, y=p_bull, name=f"{L['bull']} ({curr_symbol}{p_bull[-1]:,.0f})", line=dict(dash='dash', color='#3b82f6')))
+            fig_f.add_trace(go.Scatter(x=years_arr, y=p_bear, name=f"{L['bear']} ({curr_symbol}{p_bear[-1]:,.0f})", line=dict(dash='dot', color='#ef4444')))
+            fig_f.add_trace(go.Scatter(x=years_arr, y=principal_path, name=f"{L['principal']} ({curr_symbol}{principal_path[-1]:,.0f})", line=dict(color='#ffffff', dash='dot')))
+            fig_f.update_layout(template="plotly_dark", hovermode="x unified")
+            st.plotly_chart(fig_f, use_container_width=True)
+
+            # --- [하단 결과 요약 섹션 복구] ---
+            st.markdown(f"### 📈 {L['sim_title']} 상세 결과")
+            rc1, rc2, rc3 = st.columns(3)
+            with rc1:
+                st.metric(f"{L['real']} {L['final_asset']}", f"{curr_symbol}{p_real[-1]:,.0f}")
+                st.caption(f"{L['profit']}: {curr_symbol}{p_real[-1] - principal_path[-1]:,.0f}")
+            with rc2:
+                st.metric(f"{L['bull']} {L['final_asset']}", f"{curr_symbol}{p_bull[-1]:,.0f}")
+                st.caption(f"{L['profit']}: {curr_symbol}{p_bull[-1] - principal_path[-1]:,.0f}")
+            with rc3:
+                st.metric(L['principal'], f"{curr_symbol}{principal_path[-1]:,.0f}")
+                st.caption("누적 원금 합계")
+
+        except Exception as e: st.error(f"Error: {e}")

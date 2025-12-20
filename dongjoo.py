@@ -5,7 +5,63 @@ import plotly.graph_objects as go
 import numpy as np
 from datetime import datetime
 
-# 1. UI 및 다크 테마 설정
+# 0. yfinance 캐시용 헬퍼 함수들 --------------------
+@st.cache_data(ttl=3600)
+def get_exchange_rates_cached():
+    try:
+        usd_cad = yf.Ticker("USDCAD=X")
+        usd_krw = yf.Ticker("USDKRW=X")
+        c_rate = usd_cad.info.get("regularMarketPrice", 1.42)
+        k_rate = usd_krw.info.get("regularMarketPrice", 1410.0)
+        return {"USD": 1.0, "CAD": c_rate, "KRW": k_rate}
+    except Exception:
+        return {"USD": 1.0, "CAD": 1.42, "KRW": 1410.0}
+
+@st.cache_data(ttl=3600)
+def load_stock_all(ticker: str):
+    """티커 정보 + 전체/5년 히스토리 캐시"""
+    stock = yf.Ticker(ticker)
+    info = stock.info
+    hist_full = stock.history(period="max")
+    hist_5y = stock.history(period="5y")
+    return info, hist_full, hist_5y
+
+# 레버리지 감지 + 경고 --------------------
+def detect_leveraged_from_info(info: dict) -> bool:
+    name = (info.get("shortName") or "").upper()
+    longname = (info.get("longName") or "").upper()
+    desc = (info.get("longBusinessSummary") or "").upper()
+    text = name + " " + longname + " " + desc
+
+    lev_keywords_en = ["2X", "3X", "ULTRA", "LEVERAGED", "LEVERAGE", "INVERSE", "BULL", "BEAR"]
+    lev_keywords_ko = ["레버리지", "레버리지형", "곱버스", "인버스"]
+    return any(k in text for k in lev_keywords_en + lev_keywords_ko)
+
+def leveraged_warning_text(lang: str = "KO") -> str:
+    if lang == "KO":
+        return (
+            "⚠️ 레버리지 / 인버스 상품 경고\n"
+            "- 이 상품은 지수를 여러 배로 추종하거나 반대로 추종하는 **고위험 파생상품 ETF**입니다.\n"
+            "- **일일 수익률 기준으로 레버리지를 재조정**하기 때문에, 변동성이 클수록 "
+            "지수가 장기적으로 올라도 **원금이 빠르게 녹을 수 있습니다.**[web:392][web:402]\n"
+            "- 일반적으로 이러한 상품은 **단기 트레이딩 용도**이며, "
+            "**장기 투자·초보 투자자에게는 적합하지 않을 수 있습니다.**[web:389][web:396]\n"
+            "- 이 앱의 시뮬레이션에서도 레버리지 상품은 **최악의 경우 원금 대폭 손실**이 자주 나타날 수 있습니다. "
+            "실제 투자 전, 반드시 상품설명서와 위험고지를 확인하세요.[web:393][web:399]\n"
+        )
+    else:
+        return (
+            "⚠️ Warning: Leveraged / Inverse ETF\n"
+            "- This product is a **high‑risk ETF** using leverage or inverse exposure to amplify index moves.\n"
+            "- Because leverage is **reset daily**, volatility can cause your capital to **erode over time**, "
+            "even if the underlying index rises in the long run.[web:389][web:402]\n"
+            "- These products are generally **short‑term trading tools** and may **not be suitable for long‑term, "
+            "buy‑and‑hold retail investors**.[web:396][web:403]\n"
+            "- In this app’s simulations, leveraged products may show **severe loss of principal** in many paths. "
+            "Always read the ETF prospectus and risk disclosures before investing.[web:393][web:399]\n"
+        )
+
+# 1. UI 및 다크 테마 설정 ---------------------------------
 st.set_page_config(page_title="Wealthy Dongjoo", layout="centered")
 st.markdown(
     """
@@ -20,7 +76,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# 2. 세션 상태 관리
+# 2. 세션 상태 관리 ---------------------------------
 if "menu" not in st.session_state:
     st.session_state.menu = "Dashboard"
 if "user_lang" not in st.session_state:
@@ -28,7 +84,7 @@ if "user_lang" not in st.session_state:
 if "user_currency" not in st.session_state:
     st.session_state.user_currency = "USD"
 
-# 언어 팩
+# 언어 팩 ---------------------------------
 L = {
     "KO": {
         "dash": "📊 대시보드",
@@ -154,23 +210,14 @@ All investment decisions must be made at your own judgment and risk.
     },
 }[st.session_state.user_lang]
 
-# 3. 환율 정보
-@st.cache_data(ttl=14400)
+# 3. 환율 정보 (캐시 사용) ---------------------------
 def get_exchange_rates():
-    try:
-        usd_cad = yf.Ticker("USDCAD=X")
-        usd_krw = yf.Ticker("USDKRW=X")
-        c_rate = usd_cad.info.get("regularMarketPrice", 1.42)
-        k_rate = usd_krw.info.get("regularMarketPrice", 1410.0)
-        return {"USD": 1.0, "CAD": c_rate, "KRW": k_rate}
-    except Exception:
-        return {"USD": 1.0, "CAD": 1.42, "KRW": 1410.0}
-
+    return get_exchange_rates_cached()
 
 rates = get_exchange_rates()
 curr_symbol = {"USD": "$", "CAD": "C$", "KRW": "₩"}[st.session_state.user_currency]
 
-# 4. 기업 정보 추출
+# 4. 기업 정보 추출 ---------------------------
 def get_company_sector(info):
     sector = info.get("sector", "")
     industry = info.get("industry", "")
@@ -200,8 +247,7 @@ def get_company_sector(info):
         return industry
     return "N/A"
 
-
-# 5. 성장률 계산
+# 5. 성장률 계산 ---------------------------
 def get_smart_growth_rate(info, hist_data):
     growth_rates = []
 
@@ -241,8 +287,7 @@ def get_smart_growth_rate(info, hist_data):
 
     return 8
 
-
-# 6. Graham's Formula
+# 6. Graham's Formula ---------------------------
 def calculate_graham_value(eps, growth_rate, stock_currency, user_currency):
     try:
         if eps is None or eps <= 0:
@@ -256,8 +301,7 @@ def calculate_graham_value(eps, growth_rate, stock_currency, user_currency):
     except Exception:
         return None
 
-
-# 7. DCF 계산
+# 7. DCF 계산 ---------------------------
 def calculate_dcf_value(info, growth_rate, stock_currency, user_currency):
     try:
         operating_cf = info.get("operatingCashflow")
@@ -289,15 +333,14 @@ def calculate_dcf_value(info, growth_rate, stock_currency, user_currency):
     except Exception:
         return None
 
-
-# 사이드바
+# 사이드바 ---------------------------
 st.sidebar.title("Wealthy Dongjoo")
 if st.sidebar.button(L["dash"]):
     st.session_state.menu = "Dashboard"
 if st.sidebar.button(L["set"]):
     st.session_state.menu = "Settings"
 
-# 화면 전환
+# 화면 전환 ---------------------------
 if st.session_state.menu == "Settings":
     st.title(L["set"])
     st.session_state.user_lang = st.radio(
@@ -316,12 +359,10 @@ else:
 
     if ticker:
         try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            hist_full = stock.history(period="max")
-            hist_5y = stock.history(period="5y")
-            stock_currency = info.get("currency", "USD")
+            # 캐시된 yfinance 호출 사용
+            info, hist_full, hist_5y = load_stock_all(ticker)
 
+            stock_currency = info.get("currency", "USD")
             is_etf = info.get("quoteType") == "ETF"
 
             company_name = info.get("longName") or info.get("shortName") or ticker
@@ -329,6 +370,13 @@ else:
 
             st.markdown(f"### {company_name}")
             st.caption(f"**{L['company_info']}:** {sector_info}")
+
+            # 레버리지 감지 시 빨간 경고
+            if detect_leveraged_from_info(info):
+                st.markdown(
+                    f"<p style='color:#ff4b4b; font-size:0.9rem; white-space:pre-line;'>{leveraged_warning_text(st.session_state.user_lang)}</p>",
+                    unsafe_allow_html=True,
+                )
 
             # 5년 차트
             if len(hist_5y) > 0:
@@ -788,4 +836,12 @@ else:
             )
 
         except Exception as e:
-            st.error(f"⚠️ 데이터 오류: {e}")
+            msg = str(e)
+            # yfinance 레이트 리밋일 때 메시지 구분
+            if "Too Many Requests" in msg or "Rate limited" in msg:
+                if st.session_state.user_lang == "KO":
+                    st.error("⚠️ 데이터 오류: 야후 Finance 요청 한도가 초과되었습니다. 잠시 후 다시 시도해 주세요.")
+                else:
+                    st.error("⚠️ Data error: Yahoo Finance rate limit exceeded. Please try again later.")
+            else:
+                st.error(f"⚠️ 데이터 오류: {e}")

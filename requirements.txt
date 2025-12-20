@@ -1,5 +1,5 @@
-streamlit
-yfinance
+streamlit>=1.38
+yfinance>=0.2.64
 google-generativeai
 plotly
 pandas
